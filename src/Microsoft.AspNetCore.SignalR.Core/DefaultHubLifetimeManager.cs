@@ -67,14 +67,8 @@ namespace Microsoft.AspNetCore.SignalR
 
         private Task SendAllWhere(string methodName, object[] args, Func<HubConnectionContext, bool> include)
         {
-            var count = _connections.Count;
-            if (count == 0)
-            {
-                return Task.CompletedTask;
-            }
-
-            var tasks = new List<Task>(count);
-            var message = CreateInvocationMessage(methodName, args);
+            List<Task> tasks = null;
+            InvocationMessage message = null;
 
             // TODO: serialize once per format by providing a different stream?
             foreach (var connection in _connections)
@@ -84,7 +78,18 @@ namespace Microsoft.AspNetCore.SignalR
                     continue;
                 }
 
+                if (message == null)
+                {
+                    message = CreateInvocationMessage(methodName, args);
+                    tasks = new List<Task>();
+                }
+
                 tasks.Add(connection.WriteAsync(message));
+            }
+
+            if (tasks == null)
+            {
+                return Task.CompletedTask;
             }
 
             return Task.WhenAll(tasks);
