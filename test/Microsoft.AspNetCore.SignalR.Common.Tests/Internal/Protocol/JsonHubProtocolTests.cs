@@ -39,6 +39,7 @@ namespace Microsoft.AspNetCore.SignalR.Common.Tests.Internal.Protocol
             new object[] { new InvocationMessage(null, "Target", null, new CustomObject()), false, NullValueHandling.Include, "{\"type\":1,\"target\":\"Target\",\"arguments\":[{\"StringProp\":\"SignalR!\",\"DoubleProp\":6.2831853071,\"IntProp\":42,\"DateTimeProp\":\"2017-04-11T00:00:00\",\"NullProp\":null,\"ByteArrProp\":\"AQID\"}]}" },
             new object[] { new InvocationMessage(null, "Target", null, new CustomObject()), true, NullValueHandling.Include, "{\"type\":1,\"target\":\"Target\",\"arguments\":[{\"stringProp\":\"SignalR!\",\"doubleProp\":6.2831853071,\"intProp\":42,\"dateTimeProp\":\"2017-04-11T00:00:00\",\"nullProp\":null,\"byteArrProp\":\"AQID\"}]}" },
             new object[] { AddHeaders(TestHeaders, new InvocationMessage("123", "Target", null, 1, "Foo", 2.0f)), true, NullValueHandling.Ignore, "{\"type\":1," + SerializedHeaders + ",\"invocationId\":\"123\",\"target\":\"Target\",\"arguments\":[1,\"Foo\",2.0]}" },
+            new object[] { new InvocationMessage(null, "Target", null, BuildQueue()), true, NullValueHandling.Include, "{\"type\":1,\"target\":\"Target\",\"arguments\":[[\"first\",\"second\"]]}" },
 
             new object[] { new StreamItemMessage("123", 1), true, NullValueHandling.Ignore, "{\"type\":2,\"invocationId\":\"123\",\"item\":1}" },
             new object[] { new StreamItemMessage("123", "Foo"), true, NullValueHandling.Ignore, "{\"type\":2,\"invocationId\":\"123\",\"item\":\"Foo\"}" },
@@ -209,6 +210,15 @@ namespace Microsoft.AspNetCore.SignalR.Common.Tests.Internal.Protocol
             output.Write(message, 0, message.Length);
             TextMessageFormatter.WriteRecordSeparator(output);
             return output.ToArray();
+        }
+
+        private static Queue<string> BuildQueue()
+        {
+            var q = new Queue<string>();
+            q.Enqueue("first");
+            q.Enqueue("second");
+
+            return q;
         }
     }
 }
