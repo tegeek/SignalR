@@ -1,9 +1,11 @@
 using System;
+using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Channels;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.SignalR.Internal.Protocol;
 using Moq;
+using Newtonsoft.Json.Linq;
 using Xunit;
 
 namespace Microsoft.AspNetCore.SignalR.Tests
@@ -84,6 +86,41 @@ namespace Microsoft.AspNetCore.SignalR.Tests
                 Assert.Equal("Hello", message.Target);
                 Assert.Single(message.Arguments);
                 Assert.Equal("World", (string)message.Arguments[0]);
+
+                Assert.Null(client2.TryRead());
+            }
+        }
+
+        [Fact]
+        public async Task InvokeGroupAsyncWithQueueArgumentsWritesToAllConnectionsInGroupOutput()
+        {
+            using (var client1 = new TestClient())
+            using (var client2 = new TestClient())
+            {
+                var manager = new DefaultHubLifetimeManager<MyHub>();
+                var connection1 = HubConnectionContextUtils.Create(client1.Connection);
+                var connection2 = HubConnectionContextUtils.Create(client2.Connection);
+
+                await manager.OnConnectedAsync(connection1).OrTimeout();
+                await manager.OnConnectedAsync(connection2).OrTimeout();
+
+                await manager.AddGroupAsync(connection1.ConnectionId, "gunit").OrTimeout();
+
+                HubContext<MyHub> context = new HubContext<MyHub>(manager);
+
+                Queue<string> q = new Queue<string>();
+                q.Enqueue("Earth");
+                q.Enqueue("Moon");
+
+                await context.Clients.Group("gunit").SendAsync("Hello", q).OrTimeout();
+
+                var message = Assert.IsType<InvocationMessage>(client1.TryRead());
+                Assert.Equal("Hello", message.Target);
+                Assert.Single(message.Arguments);
+
+                JArray a = (JArray) message.Arguments[0];
+                Assert.Equal("Earth", (string)a[0]);
+                Assert.Equal("Moon", (string)a[1]);
 
                 Assert.Null(client2.TryRead());
             }
