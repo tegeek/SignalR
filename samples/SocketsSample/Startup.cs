@@ -5,7 +5,7 @@ using System;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.Extensions.DependencyInjection;
-using MsgPack.Serialization;
+//using MsgPack.Serialization;
 using SocketsSample.EndPoints;
 using SocketsSample.Hubs;
 using StackExchange.Redis;
@@ -27,7 +27,7 @@ namespace SocketsSample
             })
             .AddMessagePackProtocol(options =>
             {
-                options.SerializationContext.DictionarySerlaizationOptions.KeyTransformer = DictionaryKeyTransformers.LowerCamel;
+                //options.SerializationContext.DictionarySerlaizationOptions.KeyTransformer = DictionaryKeyTransformers.LowerCamel;
             });
             // .AddRedis();
 
