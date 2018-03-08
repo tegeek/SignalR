@@ -51,12 +51,12 @@ namespace Microsoft.AspNetCore.SignalR.Internal.Protocol
 
         private static HubMessage ParseMessage(Stream input, IInvocationBinder binder)
         {
-            _ = MessagePack.MessagePackBinary.ReadArrayHeader(input);
+            _ = MessagePackBinary.ReadArrayHeader(input);
             //using (var unpacker = Unpacker.Create(input))
             {
                 //_ = ReadArrayLength(unpacker, "elementCount");
 
-                var messageType = MessagePackBinary.ReadInt32(input);
+                var messageType = ReadInt32(input, "messageType");
                 //var messageType = ReadInt32(unpacker, "messageType");
 
                 switch (messageType)
@@ -286,7 +286,7 @@ namespace Microsoft.AspNetCore.SignalR.Internal.Protocol
             MessagePackBinary.WriteArrayHeader(packer, 5);
             //packer.PackArrayHeader(5);
             //packer.Pack(HubProtocolConstants.InvocationMessageType);
-            MessagePackBinary.WriteInt16(packer, HubProtocolConstants.InvocationMessageType);
+            MessagePackBinary.WriteInt32(packer, HubProtocolConstants.InvocationMessageType);
             PackHeaders(packer, message.Headers);
             if (string.IsNullOrEmpty(message.InvocationId))
             {
@@ -306,7 +306,7 @@ namespace Microsoft.AspNetCore.SignalR.Internal.Protocol
 
         private void WriteStreamInvocationMessage(StreamInvocationMessage message, Stream packer)
         {
-            MessagePackBinary.WriteMapHeader(packer, 5);
+            MessagePackBinary.WriteArrayHeader(packer, 5);
             //packer.PackArrayHeader(5);
             //packer.Pack(HubProtocolConstants.StreamInvocationMessageType);
             MessagePackBinary.WriteInt16(packer, HubProtocolConstants.StreamInvocationMessageType);
@@ -342,7 +342,7 @@ namespace Microsoft.AspNetCore.SignalR.Internal.Protocol
             //packer.PackArrayHeader(4 + (resultKind != VoidResult ? 1 : 0));
             MessagePackBinary.WriteArrayHeader(packer, 4 + (resultKind != VoidResult ? 1 : 0));
             //packer.Pack(HubProtocolConstants.CompletionMessageType);
-            MessagePackBinary.WriteInt16(packer, HubProtocolConstants.CompletionMessageType);
+            MessagePackBinary.WriteInt32(packer, HubProtocolConstants.CompletionMessageType);
             PackHeaders(packer, message.Headers);
             //packer.PackString(message.InvocationId);
             MessagePackBinary.WriteString(packer, message.InvocationId);
@@ -377,14 +377,14 @@ namespace Microsoft.AspNetCore.SignalR.Internal.Protocol
             //packer.PackArrayHeader(1);
             MessagePackBinary.WriteArrayHeader(packer, 1);
             //packer.Pack(HubProtocolConstants.PingMessageType);
-            MessagePackBinary.WriteInt16(packer, HubProtocolConstants.PingMessageType);
+            MessagePackBinary.WriteInt32(packer, HubProtocolConstants.PingMessageType);
         }
 
         private void PackHeaders(Stream packer, IDictionary<string, string> headers)
         {
             if (headers != null)
             {
-                MessagePackBinary.WriteArrayHeader(packer, headers.Count);
+                MessagePackBinary.WriteMapHeader(packer, headers.Count);
                 //packer.PackMapHeader(headers.Count);
                 if (headers.Count > 0)
                 {
@@ -400,7 +400,7 @@ namespace Microsoft.AspNetCore.SignalR.Internal.Protocol
             else
             {
                 //packer.PackMapHeader(0);
-                MessagePackBinary.WriteArrayHeader(packer, 0);
+                MessagePackBinary.WriteMapHeader(packer, 0);
             }
         }
 
