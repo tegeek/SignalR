@@ -31,6 +31,7 @@ namespace ClientSample
 
             Console.WriteLine("Connecting to {0}", baseUrl);
             var connection = new HubConnectionBuilder()
+                .WithMessageHandler(innerHandler => new LoggingMessageHandler(innerHandler))
                 .WithUrl(baseUrl)
                 .WithConsoleLogger(LogLevel.Trace)
                 .Build();
