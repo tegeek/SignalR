@@ -20,41 +20,15 @@ namespace Microsoft.AspNetCore.SignalR.Client.Tests
     public class HubConnectionTests
     {
         [Fact]
-        public async Task StartAsyncCallsConnectionStart()
-        {
-            var connection = new Mock<IConnection>();
-            var protocol = new Mock<IHubProtocol>();
-            protocol.SetupGet(p => p.TransferFormat).Returns(TransferFormat.Text);
-            connection.SetupGet(p => p.Features).Returns(new FeatureCollection());
-            connection.Setup(m => m.StartAsync(TransferFormat.Text)).Returns(Task.CompletedTask).Verifiable();
-            var hubConnection = new HubConnection(connection.Object, protocol.Object, null);
-            await hubConnection.StartAsync();
-
-            connection.Verify(c => c.StartAsync(TransferFormat.Text), Times.Once());
-        }
-
-        [Fact]
-        public async Task DisposeAsyncCallsConnectionStart()
-        {
-            var connection = new Mock<IConnection>();
-            connection.Setup(m => m.Features).Returns(new FeatureCollection());
-            connection.Setup(m => m.StartAsync(TransferFormat.Text)).Verifiable();
-            var hubConnection = new HubConnection(connection.Object, Mock.Of<IHubProtocol>(), null);
-            await hubConnection.DisposeAsync();
-
-            connection.Verify(c => c.DisposeAsync(), Times.Once());
-        }
-
-        [Fact]
         public async Task InvokeThrowsIfSerializingMessageFails()
         {
             var exception = new InvalidOperationException();
             var mockProtocol = MockHubProtocol.Throw(exception);
-            var hubConnection = new HubConnection(new TestConnection(), mockProtocol, null);
+            var hubConnection = new HubConnection(() => new TestConnection(), mockProtocol, null);
             await hubConnection.StartAsync();
 
             var actualException =
-                await Assert.ThrowsAsync<InvalidOperationException>(async () => await hubConnection.InvokeAsync<int>("test"));
+                await Assert.ThrowsAsync<InvalidOperationException>(async () => await hubConnection.InvokeAsync<int>("test").OrTimeout());
             Assert.Same(exception, actualException);
         }
 
@@ -63,7 +37,7 @@ namespace Microsoft.AspNetCore.SignalR.Client.Tests
         {
             var exception = new InvalidOperationException();
             var mockProtocol = MockHubProtocol.Throw(exception);
-            var hubConnection = new HubConnection(new TestConnection(), mockProtocol, null);
+            var hubConnection = new HubConnection(() => new TestConnection(), mockProtocol, null);
             await hubConnection.StartAsync();
 
             var actualException =
@@ -74,7 +48,7 @@ namespace Microsoft.AspNetCore.SignalR.Client.Tests
         [Fact]
         public async Task ClosedEventRaisedWhenTheClientIsStopped()
         {
-            var hubConnection = new HubConnection(new TestConnection(), Mock.Of<IHubProtocol>(), null);
+            var hubConnection = new HubConnection(() => new TestConnection(), Mock.Of<IHubProtocol>(), null);
             var closedEventTcs = new TaskCompletionSource<Exception>();
             hubConnection.Closed += e => closedEventTcs.SetResult(e);
 
@@ -87,7 +61,7 @@ namespace Microsoft.AspNetCore.SignalR.Client.Tests
         public async Task CannotCallInvokeOnNotStartedHubConnection()
         {
             var connection = new TestConnection();
-            var hubConnection = new HubConnection(connection, new JsonHubProtocol(), new LoggerFactory());
+            var hubConnection = new HubConnection(() => connection, new JsonHubProtocol(), new LoggerFactory());
 
             var exception = await Assert.ThrowsAsync<InvalidOperationException>(
                 () => hubConnection.InvokeAsync<int>("test"));
@@ -99,7 +73,7 @@ namespace Microsoft.AspNetCore.SignalR.Client.Tests
         public async Task CannotCallInvokeOnClosedHubConnection()
         {
             var connection = new TestConnection();
-            var hubConnection = new HubConnection(connection, new JsonHubProtocol(), new LoggerFactory());
+            var hubConnection = new HubConnection(() => connection, new JsonHubProtocol(), new LoggerFactory());
 
             await hubConnection.StartAsync();
             await hubConnection.DisposeAsync();
@@ -113,7 +87,7 @@ namespace Microsoft.AspNetCore.SignalR.Client.Tests
         public async Task CannotCallSendOnNotStartedHubConnection()
         {
             var connection = new TestConnection();
-            var hubConnection = new HubConnection(connection, new JsonHubProtocol(), new LoggerFactory());
+            var hubConnection = new HubConnection(() => connection, new JsonHubProtocol(), new LoggerFactory());
 
             var exception = await Assert.ThrowsAsync<InvalidOperationException>(
                 () => hubConnection.SendAsync("test"));
@@ -125,7 +99,7 @@ namespace Microsoft.AspNetCore.SignalR.Client.Tests
         public async Task CannotCallSendOnClosedHubConnection()
         {
             var connection = new TestConnection();
-            var hubConnection = new HubConnection(connection, new JsonHubProtocol(), new LoggerFactory());
+            var hubConnection = new HubConnection(() => connection, new JsonHubProtocol(), new LoggerFactory());
 
             await hubConnection.StartAsync();
             await hubConnection.DisposeAsync();
@@ -138,7 +112,7 @@ namespace Microsoft.AspNetCore.SignalR.Client.Tests
         public async Task CannotCallStreamOnClosedHubConnection()
         {
             var connection = new TestConnection();
-            var hubConnection = new HubConnection(connection, new JsonHubProtocol(), new LoggerFactory());
+            var hubConnection = new HubConnection(() => connection, new JsonHubProtocol(), new LoggerFactory());
 
             await hubConnection.StartAsync();
             await hubConnection.DisposeAsync();
@@ -152,7 +126,7 @@ namespace Microsoft.AspNetCore.SignalR.Client.Tests
         public async Task CannotCallStreamOnNotStartedHubConnection()
         {
             var connection = new TestConnection();
-            var hubConnection = new HubConnection(connection, new JsonHubProtocol(), new LoggerFactory());
+            var hubConnection = new HubConnection(() => connection, new JsonHubProtocol(), new LoggerFactory());
 
             var exception = await Assert.ThrowsAsync<InvalidOperationException>(
                 () => hubConnection.StreamAsChannelAsync<int>("test"));
@@ -164,7 +138,7 @@ namespace Microsoft.AspNetCore.SignalR.Client.Tests
         public async Task PendingInvocationsAreCancelledWhenConnectionClosesCleanly()
         {
             var connection = new TestConnection();
-            var hubConnection = new HubConnection(connection, new JsonHubProtocol(), new LoggerFactory());
+            var hubConnection = new HubConnection(() => connection, new JsonHubProtocol(), new LoggerFactory());
 
             await hubConnection.StartAsync();
             var invokeTask = hubConnection.InvokeAsync<int>("testMethod");
@@ -182,7 +156,7 @@ namespace Microsoft.AspNetCore.SignalR.Client.Tests
                 .Setup(m => m.DisposeAsync())
                 .Returns(Task.FromResult<object>(null));
 
-            var hubConnection = new HubConnection(mockConnection.Object, Mock.Of<IHubProtocol>(), new LoggerFactory());
+            var hubConnection = new HubConnection(() => mockConnection.Object, Mock.Of<IHubProtocol>(), new LoggerFactory());
 
             await hubConnection.StartAsync();
             var invokeTask = hubConnection.InvokeAsync<int>("testMethod");
@@ -198,7 +172,7 @@ namespace Microsoft.AspNetCore.SignalR.Client.Tests
         public async Task ConnectionTerminatedIfServerTimeoutIntervalElapsesWithNoMessages()
         {
             var connection = new TestConnection();
-            var hubConnection = new HubConnection(connection, new JsonHubProtocol(), new LoggerFactory());
+            var hubConnection = new HubConnection(() => connection, new JsonHubProtocol(), new LoggerFactory());
 
             hubConnection.ServerTimeout = TimeSpan.FromMilliseconds(100);
 
@@ -215,7 +189,7 @@ namespace Microsoft.AspNetCore.SignalR.Client.Tests
         public async Task OnReceivedAfterTimerDisposedDoesNotThrow()
         {
             var connection = new TestConnection();
-            var hubConnection = new HubConnection(connection, new JsonHubProtocol(), new LoggerFactory());
+            var hubConnection = new HubConnection(() => connection, new JsonHubProtocol(), new LoggerFactory());
             await hubConnection.StartAsync().OrTimeout();
             await hubConnection.DisposeAsync().OrTimeout();
 

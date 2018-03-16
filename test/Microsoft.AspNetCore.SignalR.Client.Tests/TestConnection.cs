@@ -11,6 +11,7 @@ using System.Threading.Tasks;
 using Microsoft.AspNetCore.Http.Features;
 using Microsoft.AspNetCore.Protocols;
 using Microsoft.AspNetCore.SignalR.Internal.Formatters;
+using Microsoft.AspNetCore.SignalR.Internal.Protocol;
 using Microsoft.AspNetCore.Sockets.Client;
 using Newtonsoft.Json;
 
@@ -35,14 +36,18 @@ namespace Microsoft.AspNetCore.SignalR.Client.Tests
 
         private bool _closed;
         private object _closedLock = new object();
+        private readonly Func<Task> _onStart;
+        private readonly Func<Task> _onDispose;
 
         public List<ReceiveCallback> Callbacks { get; } = new List<ReceiveCallback>();
 
         public IFeatureCollection Features { get; } = new FeatureCollection();
 
-        public TestConnection()
+        public TestConnection(Func<Task> onStart = null, Func<Task> onDispose = null)
         {
             _receiveLoop = ReceiveLoopAsync(_receiveShutdownToken.Token);
+            _onStart = onStart;
+            _onDispose = onDispose;
         }
 
         public Task AbortAsync(Exception ex) => DisposeCoreAsync(ex);
@@ -51,11 +56,12 @@ namespace Microsoft.AspNetCore.SignalR.Client.Tests
         // TestConnection isn't restartable
         public Task StopAsync() => DisposeAsync();
 
-        private Task DisposeCoreAsync(Exception ex = null)
+        private async Task DisposeCoreAsync(Exception ex = null)
         {
+            await _onDispose();
             TriggerClosed(ex);
             _receiveShutdownToken.Cancel();
-            return _receiveLoop;
+            await _receiveLoop;
         }
 
         public async Task SendAsync(byte[] data, CancellationToken cancellationToken)
@@ -75,10 +81,14 @@ namespace Microsoft.AspNetCore.SignalR.Client.Tests
             throw new ObjectDisposedException("Unable to send message, underlying channel was closed");
         }
 
-        public Task StartAsync(TransferFormat transferFormat)
+        public async Task StartAsync(TransferFormat transferFormat)
         {
             _started.TrySetResult(null);
-            return Task.CompletedTask;
+
+            if(_onStart != null)
+            {
+                await _onStart();
+            }
         }
 
         public async Task<string> ReadSentTextMessageAsync()

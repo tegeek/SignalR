@@ -6,6 +6,7 @@ using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
+using System.Runtime.CompilerServices;
 using System.Threading;
 using System.Threading.Channels;
 using System.Threading.Tasks;
@@ -40,7 +41,6 @@ namespace Microsoft.AspNetCore.SignalR.Client
         private CancellationTokenSource _connectionActive;
 
         private int _nextId = 0;
-        private volatile bool _startCalled;
         private Timer _timeoutTimer;
         private bool _needKeepAlive;
 
@@ -51,6 +51,10 @@ namespace Microsoft.AspNetCore.SignalR.Client
         /// will not be applied until the Keep Alive timer is next reset.
         /// </summary>
         public TimeSpan ServerTimeout { get; set; } = DefaultServerTimeout;
+
+        public HubConnection(Func<IConnection> connectionFactory, IHubProtocol protocol) : this(connectionFactory, protocol, NullLoggerFactory.Instance)
+        {
+        }
 
         public HubConnection(Func<IConnection> connectionFactory, IHubProtocol protocol, ILoggerFactory loggerFactory)
         {
@@ -69,15 +73,15 @@ namespace Microsoft.AspNetCore.SignalR.Client
             _protocol = protocol;
             _loggerFactory = loggerFactory ?? NullLoggerFactory.Instance;
             _logger = _loggerFactory.CreateLogger<HubConnection>();
-            _connection.OnReceived((data, state) => ((HubConnection)state).OnDataReceivedAsync(data), this);
-            _connection.Closed += e => Shutdown(e);
 
             // Create the timer for timeout, but disabled by default (we enable it when started).
-            _timeoutTimer = new Timer(state => ((HubConnection)state).TimeoutElapsed(), this, Timeout.Infinite, Timeout.Infinite);
+            _timeoutTimer = new Timer(state => _ = ((HubConnection)state).TimeoutElapsed(), this, Timeout.Infinite, Timeout.Infinite);
         }
 
         public async Task StartAsync()
         {
+            CheckDisposed();
+
             await _connectionLock.WaitAsync();
 
             try
@@ -87,19 +91,27 @@ namespace Microsoft.AspNetCore.SignalR.Client
             finally
             {
                 _connectionLock.Release();
-                _startCalled = true;
             }
         }
 
-        private void TimeoutElapsed()
+        private async Task TimeoutElapsed()
         {
-            _connection.AbortAsync(new TimeoutException($"Server timeout ({ServerTimeout.TotalMilliseconds:0.00}ms) elapsed without receiving a message from the server."));
+            await _connectionLock.WaitAsync();
+            try
+            {
+                if (!_disposed)
+                {
+                    await _connection.AbortAsync(new TimeoutException($"Server timeout ({ServerTimeout.TotalMilliseconds:0.00}ms) elapsed without receiving a message from the server."));
+                }
+            }
+            finally
+            {
+                _connectionLock.Release();
+            }
         }
 
         private void ResetTimeoutTimer()
         {
-            Debug.Assert(_connectionLock.CurrentCount == 0, "We're not in the connection lock!");
-
             if (_needKeepAlive)
             {
                 Log.ResettingKeepAliveTimer(_logger);
@@ -120,22 +132,22 @@ namespace Microsoft.AspNetCore.SignalR.Client
 
         private async Task StartAsyncCore()
         {
-            Debug.Assert(_connectionLock.CurrentCount == 0, "We're not in the Connection Lock!");
+            TestCompatibleAssert(_connectionLock.CurrentCount == 0, "We're not in the Connection Lock!");
 
-            if (_disposed)
-            {
-                throw new ObjectDisposedException(nameof(HubConnection));
-            }
+            CheckDisposed();
 
             if (_connection != null)
             {
                 // We have an existing connection!
-                throw new InvalidOperationException("The connection has already been started.");
+                throw new InvalidOperationException($"The '{nameof(StartAsync)}' method cannot be called if the connection has already been started.");
             }
 
-            var connection = _connectionFactory();
-            await connection.StartAsync(_protocol.TransferFormat);
-            _needKeepAlive = connection.Features.Get<IConnectionInherentKeepAliveFeature>() == null;
+            _connection = _connectionFactory();
+            _connection.OnReceived((data, state) => ((HubConnection)state).OnDataReceivedAsync(data), this);
+            _connection.Closed += e => _ = Shutdown(e);
+
+            await _connection.StartAsync(_protocol.TransferFormat);
+            _needKeepAlive = _connection.Features.Get<IConnectionInherentKeepAliveFeature>() == null;
 
             Log.HubProtocol(_logger, _protocol.Name);
 
@@ -150,8 +162,15 @@ namespace Microsoft.AspNetCore.SignalR.Client
             ResetTimeoutTimer();
         }
 
+        /// <summary>
+        /// Requests that the connection be stopped. This task completes when the stop request has been processed,
+        /// the connection is not fully stopped until the <see cref="Closed"/> event is raised.
+        /// </summary>
+        /// <returns>A <see cref="Task"/> that completes when connection shutdown has begun.</returns>
         public async Task StopAsync()
         {
+            CheckDisposed();
+
             await _connectionLock.WaitAsync();
             try
             {
@@ -165,24 +184,27 @@ namespace Microsoft.AspNetCore.SignalR.Client
 
         private async Task StopAsyncCore()
         {
-            Debug.Assert(_connectionLock.CurrentCount == 0, "We're not in the Connection Lock!");
+            TestCompatibleAssert(_connectionLock.CurrentCount == 0, "We're not in the Connection Lock!");
 
-            if (_disposed)
-            {
-                throw new ObjectDisposedException(nameof(HubConnection));
-            }
+            CheckDisposed();
 
             if (_connection == null)
             {
-                throw new InvalidOperationException("The connection is not currently active.");
+                throw new InvalidOperationException($"The '{nameof(StopAsync)}' method cannot be called if the connection is not active");
             }
 
-            // Disposing the connection will stop it.
-            await DisposeConnectionAsync();
+            // Stop the connection but don't clean it up. The HttpConnection.Closed event handler does that.
+            await _connection.StopAsync();
         }
 
         public async Task DisposeAsync()
         {
+            if (_disposed)
+            {
+                // We're already disposed
+                return;
+            }
+
             await _connectionLock.WaitAsync();
             try
             {
@@ -196,7 +218,7 @@ namespace Microsoft.AspNetCore.SignalR.Client
 
         private async Task DisposeAsyncCore()
         {
-            Debug.Assert(_connectionLock.CurrentCount == 0, "We're not in the Connection Lock!");
+            TestCompatibleAssert(_connectionLock.CurrentCount == 0, "We're not in the Connection Lock!");
 
             if (_disposed)
             {
@@ -212,9 +234,12 @@ namespace Microsoft.AspNetCore.SignalR.Client
             }
         }
 
-        // TODO: Client return values/tasks?
         public IDisposable On(string methodName, Type[] parameterTypes, Func<object[], object, Task> handler, object state)
         {
+            CheckDisposed();
+
+            // It's OK to be disposed while registering a callback, we'll just never call the callback anyway (as with all the callbacks registered before disposal).
+
             var invocationHandler = new InvocationHandler(parameterTypes, handler, state);
             var invocationList = _handlers.AddOrUpdate(methodName, _ => new List<InvocationHandler> { invocationHandler },
                 (_, invocations) =>
@@ -231,40 +256,50 @@ namespace Microsoft.AspNetCore.SignalR.Client
 
         public async Task<ChannelReader<object>> StreamAsChannelAsync(string methodName, Type returnType, object[] args, CancellationToken cancellationToken = default)
         {
+            CheckDisposed();
+
             return await StreamAsChannelAsyncCore(methodName, returnType, args, cancellationToken).ForceAsync();
         }
 
         private async Task<ChannelReader<object>> StreamAsChannelAsyncCore(string methodName, Type returnType, object[] args, CancellationToken cancellationToken)
         {
-            if (!_startCalled)
+            await _connectionLock.WaitAsync();
+            try
             {
-                throw new InvalidOperationException($"The '{nameof(StreamAsChannelAsync)}' method cannot be called before the connection has been started.");
-            }
-
-            var irq = InvocationRequest.Stream(cancellationToken, returnType, GetNextId(), _loggerFactory, this, out var channel);
-            await InvokeStreamCore(methodName, irq, args, cancellationToken);
-
-            if (cancellationToken.CanBeCanceled)
-            {
-                cancellationToken.Register(state =>
+                if (_connection == null)
                 {
-                    var invocationReq = (InvocationRequest)state;
-                    if (!invocationReq.HubConnection._connectionActive.IsCancellationRequested)
+                    throw new InvalidOperationException($"The '{nameof(StreamAsChannelAsync)}' method cannot be called if the connection is not active");
+                }
+
+                var irq = InvocationRequest.Stream(cancellationToken, returnType, GetNextId(), _loggerFactory, this, out var channel);
+                await InvokeStreamCore(methodName, irq, args, cancellationToken);
+
+                if (cancellationToken.CanBeCanceled)
+                {
+                    cancellationToken.Register(state =>
                     {
-                        // Fire and forget, if it fails that means we aren't connected anymore.
-                        _ = invocationReq.HubConnection.SendHubMessage(new CancelInvocationMessage(invocationReq.InvocationId), cancellationToken: default);
-
-                        if (invocationReq.HubConnection.TryRemoveInvocation(invocationReq.InvocationId, out _))
+                        var invocationReq = (InvocationRequest)state;
+                        if (!invocationReq.HubConnection._connectionActive.IsCancellationRequested)
                         {
-                            invocationReq.Complete(CompletionMessage.Empty(irq.InvocationId));
+                            // Fire and forget, if it fails that means we aren't connected anymore.
+                            _ = invocationReq.HubConnection.SendHubMessage(new CancelInvocationMessage(invocationReq.InvocationId), cancellationToken: default);
+
+                            if (invocationReq.HubConnection.TryRemoveInvocation(invocationReq.InvocationId, out _))
+                            {
+                                invocationReq.Complete(CompletionMessage.Empty(irq.InvocationId));
+                            }
+
+                            invocationReq.Dispose();
                         }
+                    }, irq);
+                }
 
-                        invocationReq.Dispose();
-                    }
-                }, irq);
+                return channel;
             }
-
-            return channel;
+            finally
+            {
+                _connectionLock.Release();
+            }
         }
 
         public async Task<object> InvokeAsync(string methodName, Type returnType, object[] args, CancellationToken cancellationToken = default) =>
@@ -272,19 +307,33 @@ namespace Microsoft.AspNetCore.SignalR.Client
 
         private async Task<object> InvokeAsyncCore(string methodName, Type returnType, object[] args, CancellationToken cancellationToken)
         {
-            if (!_startCalled)
+            await _connectionLock.WaitAsync();
+
+            Task<object> invocationTask;
+            try
             {
-                throw new InvalidOperationException($"The '{nameof(InvokeAsync)}' method cannot be called before the connection has been started.");
+                if (_connection == null)
+                {
+                    throw new InvalidOperationException($"The '{nameof(InvokeAsync)}' method cannot be called if the connection is not active");
+                }
+
+                var irq = InvocationRequest.Invoke(cancellationToken, returnType, GetNextId(), _loggerFactory, this, out invocationTask);
+                await InvokeCore(methodName, irq, args, cancellationToken);
+            }
+            finally
+            {
+                _connectionLock.Release();
             }
 
-            var irq = InvocationRequest.Invoke(cancellationToken, returnType, GetNextId(), _loggerFactory, this, out var task);
-            await InvokeCore(methodName, irq, args, cancellationToken);
-            return await task;
+            // Wait for this outside the lock, because it won't complete until the server responds.
+            return await invocationTask;
         }
 
         private async Task InvokeCore(string methodName, InvocationRequest irq, object[] args, CancellationToken cancellationToken)
         {
-            ThrowIfConnectionTerminated(irq.InvocationId);
+            TestCompatibleAssert(_connectionLock.CurrentCount == 0, "We're not in the Connection Lock!");
+            TestCompatibleAssert(_connection != null, "We don't have a connection!");
+
             Log.PreparingBlockingInvocation(_logger, irq.InvocationId, methodName, irq.ResultType.FullName, args.Length);
 
             // Client invocations are always blocking
@@ -306,12 +355,16 @@ namespace Microsoft.AspNetCore.SignalR.Client
             {
                 Log.SendInvocationFailed(_logger, invocationMessage.InvocationId, ex);
                 TryRemoveInvocation(invocationMessage.InvocationId, out _);
+
+                // Rethrow the send failure.
+                throw;
             }
         }
 
         private async Task InvokeStreamCore(string methodName, InvocationRequest irq, object[] args, CancellationToken cancellationToken)
         {
-            ThrowIfConnectionTerminated(irq.InvocationId);
+            TestCompatibleAssert(_connectionLock.CurrentCount == 0, "We're not in the Connection Lock!");
+            TestCompatibleAssert(_connection != null, "We don't have a connection!");
 
             Log.PreparingStreamingInvocation(_logger, irq.InvocationId, methodName, irq.ResultType.FullName, args.Length);
 
@@ -339,25 +392,35 @@ namespace Microsoft.AspNetCore.SignalR.Client
 
         private async Task SendHubMessage(HubInvocationMessage hubMessage, CancellationToken cancellationToken)
         {
+            TestCompatibleAssert(_connectionLock.CurrentCount == 0, "We're not in the Connection Lock!");
+            TestCompatibleAssert(_connection != null, "We don't have a connection!");
+
+            var payload = _protocol.WriteToArray(hubMessage);
+            Log.SendInvocation(_logger, hubMessage.InvocationId);
+
+            await _connection.SendAsync(payload, cancellationToken);
+            Log.SendInvocationCompleted(_logger, hubMessage.InvocationId);
+        }
+
+        public async Task SendAsync(string methodName, object[] args, CancellationToken cancellationToken = default) =>
+            await SendAsyncCore(methodName, args, cancellationToken).ForceAsync();
+
+        private async Task SendAsyncCore(string methodName, object[] args, CancellationToken cancellationToken)
+        {
             await _connectionLock.WaitAsync();
-
-            if (_disposed)
-            {
-                throw new ObjectDisposedException(nameof(HubConnection));
-            }
-
-            if (_connection == null)
-            {
-                throw new InvalidOperationException("The connection is not currently active");
-            }
-
             try
             {
-                var payload = _protocol.WriteToArray(hubMessage);
-                Log.SendInvocation(_logger, hubMessage.InvocationId);
+                if (_connection == null)
+                {
+                    throw new InvalidOperationException($"The '{nameof(SendAsync)}' method cannot be called if the connection is not active");
+                }
 
-                await _connection.SendAsync(payload, cancellationToken);
-                Log.SendInvocationCompleted(_logger, hubMessage.InvocationId);
+                var invocationMessage = new InvocationMessage(null, target: methodName,
+                    argumentBindingException: null, arguments: args);
+
+                ThrowIfConnectionTerminated(invocationMessage.InvocationId);
+
+                await SendHubMessage(invocationMessage, cancellationToken);
             }
             finally
             {
@@ -365,26 +428,11 @@ namespace Microsoft.AspNetCore.SignalR.Client
             }
         }
 
-        public async Task SendAsync(string methodName, object[] args, CancellationToken cancellationToken = default) =>
-            await SendAsyncCore(methodName, args, cancellationToken).ForceAsync();
-
-        private Task SendAsyncCore(string methodName, object[] args, CancellationToken cancellationToken)
-        {
-            if (!_startCalled)
-            {
-                throw new InvalidOperationException($"The '{nameof(SendAsync)}' method cannot be called before the connection has been started.");
-            }
-
-            var invocationMessage = new InvocationMessage(null, target: methodName,
-                argumentBindingException: null, arguments: args);
-
-            ThrowIfConnectionTerminated(invocationMessage.InvocationId);
-
-            return SendHubMessage(invocationMessage, cancellationToken);
-        }
-
         private async Task DisposeConnectionAsync()
         {
+            TestCompatibleAssert(_connectionLock.CurrentCount == 0, "We're not in the Connection Lock!");
+            TestCompatibleAssert(_connection != null, "We don't have a connection!");
+
             await _connection.DisposeAsync();
             _connection = null;
 
@@ -394,6 +442,16 @@ namespace Microsoft.AspNetCore.SignalR.Client
 
         private async Task OnDataReceivedAsync(byte[] data)
         {
+            if (_disposed)
+            {
+                // Discard the message
+                return;
+            }
+
+            // It's possible for us to be disposed part way through this method. That's OK though,
+            // we consider messages which get to this point before DisposeAsync as being received
+            // so we need to dispatch them to "drain" the queue after disposal.
+
             ResetTimeoutTimer();
             Log.ParsingMessages(_logger, data.Length);
             var messages = new List<HubMessage>();
@@ -444,31 +502,42 @@ namespace Microsoft.AspNetCore.SignalR.Client
             }
         }
 
-        private void Shutdown(Exception exception = null)
+        private async Task Shutdown(Exception exception = null)
         {
-            Log.ShutdownConnection(_logger);
-            if (exception != null)
-            {
-                Log.ShutdownWithError(_logger, exception);
-            }
+            await _connectionLock.WaitAsync();
 
-            lock (_pendingCallsLock)
+            try
             {
-                // We cancel inside the lock to make sure everyone who was part-way through registering an invocation
-                // completes. This also ensures that nobody will add things to _pendingCalls after we leave this block
-                // because everything that adds to _pendingCalls checks _connectionActive first (inside the _pendingCallsLock)
-                _connectionActive.Cancel();
-
-                foreach (var outstandingCall in _pendingCalls.Values)
+                Log.ShutdownConnection(_logger);
+                if (exception != null)
                 {
-                    Log.RemoveInvocation(_logger, outstandingCall.InvocationId);
-                    if (exception != null)
-                    {
-                        outstandingCall.Fail(exception);
-                    }
-                    outstandingCall.Dispose();
+                    Log.ShutdownWithError(_logger, exception);
                 }
-                _pendingCalls.Clear();
+
+                lock (_pendingCallsLock)
+                {
+                    // We cancel inside the lock to make sure everyone who was part-way through registering an invocation
+                    // completes. This also ensures that nobody will add things to _pendingCalls after we leave this block
+                    // because everything that adds to _pendingCalls checks _connectionActive first (inside the _pendingCallsLock)
+                    _connectionActive.Cancel();
+
+                    foreach (var outstandingCall in _pendingCalls.Values)
+                    {
+                        Log.RemoveInvocation(_logger, outstandingCall.InvocationId);
+                        if (exception != null)
+                        {
+                            outstandingCall.Fail(exception);
+                        }
+                        outstandingCall.Dispose();
+                    }
+                    _pendingCalls.Clear();
+                }
+
+                await DisposeConnectionAsync();
+            }
+            finally
+            {
+                _connectionLock.Release();
             }
 
             try
@@ -555,6 +624,9 @@ namespace Microsoft.AspNetCore.SignalR.Client
 
         private void AddInvocation(InvocationRequest irq)
         {
+            TestCompatibleAssert(_connectionLock.CurrentCount == 0, "We're not in the Connection Lock!");
+            TestCompatibleAssert(_connection != null, "We don't have a connection!");
+
             lock (_pendingCallsLock)
             {
                 ThrowIfConnectionTerminated(irq.InvocationId);
@@ -593,6 +665,14 @@ namespace Microsoft.AspNetCore.SignalR.Client
                 {
                     return false;
                 }
+            }
+        }
+
+        private void CheckDisposed()
+        {
+            if (_disposed)
+            {
+                throw new ObjectDisposedException(nameof(HubConnection));
             }
         }
 
@@ -671,6 +751,15 @@ namespace Microsoft.AspNetCore.SignalR.Client
             public Task InvokeAsync(object[] parameters)
             {
                 return _callback(parameters, _state);
+            }
+        }
+
+        [Conditional("DEBUG")]
+        private static void TestCompatibleAssert(bool condition, string message, [CallerMemberName] string memberName = null, [CallerFilePath] string fileName = null, [CallerLineNumber] int? lineNumber = null)
+        {
+            if (!condition)
+            {
+                throw new Exception($"Assertion failed in {memberName}, at {fileName}:{lineNumber}: {message}");
             }
         }
     }
