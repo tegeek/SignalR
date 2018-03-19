@@ -333,7 +333,9 @@ namespace Microsoft.AspNetCore.SignalR.Client.FunctionalTests
 
                     var channel = await connection.StreamAsChannelAsync<int>("Stream", 1000, cts.Token).OrTimeout();
 
+                    // Wait for the server to start streaming items
                     await channel.WaitToReadAsync().AsTask().OrTimeout();
+
                     cts.Cancel();
 
                     var results = await channel.ReadAllAsync().OrTimeout();

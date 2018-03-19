@@ -27,8 +27,9 @@ namespace Microsoft.AspNetCore.SignalR.Client.Tests
 
         private CancellationTokenSource _receiveShutdownToken = new CancellationTokenSource();
         private Task _receiveLoop;
+        private int _disposeCount = 0;
 
-        public event Action<Exception> Closed;
+        public event Action<IConnection, Exception> Closed;
         public Task Started => _started.Task;
         public Task Disposed => _disposed.Task;
         public ChannelReader<byte[]> SentMessages => _sentMessages.Reader;
@@ -42,12 +43,13 @@ namespace Microsoft.AspNetCore.SignalR.Client.Tests
         public List<ReceiveCallback> Callbacks { get; } = new List<ReceiveCallback>();
 
         public IFeatureCollection Features { get; } = new FeatureCollection();
+        public int DisposeCount => _disposeCount;
 
         public TestConnection(Func<Task> onStart = null, Func<Task> onDispose = null)
         {
             _receiveLoop = ReceiveLoopAsync(_receiveShutdownToken.Token);
-            _onStart = onStart;
-            _onDispose = onDispose;
+            _onStart = onStart ?? (() => Task.CompletedTask);
+            _onDispose = onDispose ?? (() => Task.CompletedTask);
         }
 
         public Task AbortAsync(Exception ex) => DisposeCoreAsync(ex);
@@ -58,6 +60,8 @@ namespace Microsoft.AspNetCore.SignalR.Client.Tests
 
         private async Task DisposeCoreAsync(Exception ex = null)
         {
+            Interlocked.Increment(ref _disposeCount);
+            _disposed.TrySetResult(null);
             await _onDispose();
             TriggerClosed(ex);
             _receiveShutdownToken.Cancel();
@@ -85,10 +89,7 @@ namespace Microsoft.AspNetCore.SignalR.Client.Tests
         {
             _started.TrySetResult(null);
 
-            if(_onStart != null)
-            {
-                await _onStart();
-            }
+            await _onStart();
         }
 
         public async Task<string> ReadSentTextMessageAsync()
@@ -117,22 +118,23 @@ namespace Microsoft.AspNetCore.SignalR.Client.Tests
         {
             try
             {
-                while (!token.IsCancellationRequested)
+                while (await _receivedMessages.Reader.WaitToReadAsync(token))
                 {
-                    while (await _receivedMessages.Reader.WaitToReadAsync(token))
+                    if (token.IsCancellationRequested)
                     {
-                        while (_receivedMessages.Reader.TryRead(out var message))
+                        break;
+                    }
+                    while (_receivedMessages.Reader.TryRead(out var message))
+                    {
+                        ReceiveCallback[] callbackCopies;
+                        lock (Callbacks)
                         {
-                            ReceiveCallback[] callbackCopies;
-                            lock (Callbacks)
-                            {
-                                callbackCopies = Callbacks.ToArray();
-                            }
+                            callbackCopies = Callbacks.ToArray();
+                        }
 
-                            foreach (var callback in callbackCopies)
-                            {
-                                await callback.InvokeAsync(message);
-                            }
+                        foreach (var callback in callbackCopies)
+                        {
+                            await callback.InvokeAsync(message);
                         }
                     }
                 }
@@ -156,7 +158,7 @@ namespace Microsoft.AspNetCore.SignalR.Client.Tests
                 if (!_closed)
                 {
                     _closed = true;
-                    Closed?.Invoke(ex);
+                    Closed?.Invoke(this, ex);
                 }
             }
         }

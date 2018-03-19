@@ -144,7 +144,7 @@ namespace Microsoft.AspNetCore.SignalR.Client
 
             _connection = _connectionFactory();
             _connection.OnReceived((data, state) => ((HubConnection)state).OnDataReceivedAsync(data), this);
-            _connection.Closed += e => _ = Shutdown(e);
+            _connection.Closed += (c, e) => _ = OnClosed(c, e);
 
             await _connection.StartAsync(_protocol.TransferFormat);
             _needKeepAlive = _connection.Features.Get<IConnectionInherentKeepAliveFeature>() == null;
@@ -190,11 +190,12 @@ namespace Microsoft.AspNetCore.SignalR.Client
 
             if (_connection == null)
             {
-                throw new InvalidOperationException($"The '{nameof(StopAsync)}' method cannot be called if the connection is not active");
+                // No-op if we're already stopped.
+                return;
             }
 
-            // Stop the connection but don't clean it up. The HttpConnection.Closed event handler does that.
-            await _connection.StopAsync();
+            // Stop the connection. We'll clean up immediately, and the HttpConnection.Closed event will fire but we'll just ignore it.
+            await DisposeConnectionAsync();
         }
 
         public async Task DisposeAsync()
@@ -428,18 +429,6 @@ namespace Microsoft.AspNetCore.SignalR.Client
             }
         }
 
-        private async Task DisposeConnectionAsync()
-        {
-            TestCompatibleAssert(_connectionLock.CurrentCount == 0, "We're not in the Connection Lock!");
-            TestCompatibleAssert(_connection != null, "We don't have a connection!");
-
-            await _connection.DisposeAsync();
-            _connection = null;
-
-            // Dispose the timer AFTER shutting down the connection.
-            _timeoutTimer.Dispose();
-        }
-
         private async Task OnDataReceivedAsync(byte[] data)
         {
             if (_disposed)
@@ -502,44 +491,48 @@ namespace Microsoft.AspNetCore.SignalR.Client
             }
         }
 
-        private async Task Shutdown(Exception exception = null)
+        private async Task OnClosed(IConnection sender, Exception ex)
         {
             await _connectionLock.WaitAsync();
-
             try
             {
-                Log.ShutdownConnection(_logger);
-                if (exception != null)
+                // Is this still our active connection or was this terminated already?
+                if (ReferenceEquals(_connection, sender))
                 {
-                    Log.ShutdownWithError(_logger, exception);
+                    // Clean up this connection
+                    await DisposeConnectionAsync(ex);
                 }
-
-                lock (_pendingCallsLock)
+                else
                 {
-                    // We cancel inside the lock to make sure everyone who was part-way through registering an invocation
-                    // completes. This also ensures that nobody will add things to _pendingCalls after we leave this block
-                    // because everything that adds to _pendingCalls checks _connectionActive first (inside the _pendingCallsLock)
-                    _connectionActive.Cancel();
-
-                    foreach (var outstandingCall in _pendingCalls.Values)
-                    {
-                        Log.RemoveInvocation(_logger, outstandingCall.InvocationId);
-                        if (exception != null)
-                        {
-                            outstandingCall.Fail(exception);
-                        }
-                        outstandingCall.Dispose();
-                    }
-                    _pendingCalls.Clear();
+                    // No-op, we're done with this connection
                 }
-
-                await DisposeConnectionAsync();
             }
             finally
             {
                 _connectionLock.Release();
             }
+        }
 
+        private async Task DisposeConnectionAsync(Exception exception = null)
+        {
+            TestCompatibleAssert(_connectionLock.CurrentCount == 0, "We're not in the Connection Lock!");
+            TestCompatibleAssert(_connection != null, "We don't have a connection!");
+
+            Log.ShutdownConnection(_logger);
+            if (exception != null)
+            {
+                Log.ShutdownWithError(_logger, exception);
+            }
+
+            await _connection.DisposeAsync();
+            _connection = null;
+
+            // Dispose the timer AFTER shutting down the connection.
+            _timeoutTimer.Dispose();
+
+            CancelOutstandingInvocations(exception);
+
+            // Fire our closed event.
             try
             {
                 Closed?.Invoke(exception);
@@ -547,6 +540,30 @@ namespace Microsoft.AspNetCore.SignalR.Client
             catch (Exception ex)
             {
                 Log.ErrorDuringClosedEvent(_logger, ex);
+            }
+        }
+
+        private void CancelOutstandingInvocations(Exception exception)
+        {
+            TestCompatibleAssert(_connectionLock.CurrentCount == 0, "We're not in the Connection Lock!");
+
+            lock (_pendingCallsLock)
+            {
+                // We cancel inside the lock to make sure everyone who was part-way through registering an invocation
+                // completes. This also ensures that nobody will add things to _pendingCalls after we leave this block
+                // because everything that adds to _pendingCalls checks _connectionActive first (inside the _pendingCallsLock)
+                _connectionActive.Cancel();
+
+                foreach (var outstandingCall in _pendingCalls.Values)
+                {
+                    Log.RemoveInvocation(_logger, outstandingCall.InvocationId);
+                    if (exception != null)
+                    {
+                        outstandingCall.Fail(exception);
+                    }
+                    outstandingCall.Dispose();
+                }
+                _pendingCalls.Clear();
             }
         }
 

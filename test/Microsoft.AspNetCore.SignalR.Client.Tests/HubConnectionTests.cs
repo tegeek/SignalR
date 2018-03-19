@@ -53,7 +53,7 @@ namespace Microsoft.AspNetCore.SignalR.Client.Tests
             hubConnection.Closed += e => closedEventTcs.SetResult(e);
 
             await hubConnection.StartAsync().OrTimeout();
-            await hubConnection.DisposeAsync().OrTimeout();
+            await hubConnection.StopAsync().OrTimeout();
             Assert.Null(await closedEventTcs.Task);
         }
 
@@ -66,7 +66,7 @@ namespace Microsoft.AspNetCore.SignalR.Client.Tests
             var exception = await Assert.ThrowsAsync<InvalidOperationException>(
                 () => hubConnection.InvokeAsync<int>("test"));
 
-            Assert.Equal("The 'InvokeAsync' method cannot be called before the connection has been started.", exception.Message);
+            Assert.Equal($"The '{nameof(HubConnection.InvokeAsync)}' method cannot be called if the connection is not active", exception.Message);
         }
 
         [Fact]
@@ -76,11 +76,11 @@ namespace Microsoft.AspNetCore.SignalR.Client.Tests
             var hubConnection = new HubConnection(() => connection, new JsonHubProtocol(), new LoggerFactory());
 
             await hubConnection.StartAsync();
-            await hubConnection.DisposeAsync();
+            await hubConnection.StopAsync();
             var exception = await Assert.ThrowsAsync<InvalidOperationException>(
                 () => hubConnection.InvokeAsync<int>("test"));
 
-            Assert.Equal("Connection has been terminated.", exception.Message);
+            Assert.Equal($"The '{nameof(HubConnection.InvokeAsync)}' method cannot be called if the connection is not active", exception.Message);
         }
 
         [Fact]
@@ -92,7 +92,7 @@ namespace Microsoft.AspNetCore.SignalR.Client.Tests
             var exception = await Assert.ThrowsAsync<InvalidOperationException>(
                 () => hubConnection.SendAsync("test"));
 
-            Assert.Equal("The 'SendAsync' method cannot be called before the connection has been started.", exception.Message);
+            Assert.Equal($"The '{nameof(HubConnection.SendAsync)}' method cannot be called if the connection is not active", exception.Message);
         }
 
         [Fact]
@@ -102,10 +102,10 @@ namespace Microsoft.AspNetCore.SignalR.Client.Tests
             var hubConnection = new HubConnection(() => connection, new JsonHubProtocol(), new LoggerFactory());
 
             await hubConnection.StartAsync();
-            await hubConnection.DisposeAsync();
+            await hubConnection.StopAsync();
             var exception = await Assert.ThrowsAsync<InvalidOperationException>(() => hubConnection.SendAsync("test"));
 
-            Assert.Equal("Connection has been terminated.", exception.Message);
+            Assert.Equal($"The '{nameof(HubConnection.SendAsync)}' method cannot be called if the connection is not active", exception.Message);
         }
 
         [Fact]
@@ -115,11 +115,38 @@ namespace Microsoft.AspNetCore.SignalR.Client.Tests
             var hubConnection = new HubConnection(() => connection, new JsonHubProtocol(), new LoggerFactory());
 
             await hubConnection.StartAsync();
-            await hubConnection.DisposeAsync();
+            await hubConnection.StopAsync();
             var exception = await Assert.ThrowsAsync<InvalidOperationException>(
                 () => hubConnection.StreamAsChannelAsync<int>("test"));
 
-            Assert.Equal("Connection has been terminated.", exception.Message);
+            Assert.Equal($"The '{nameof(HubConnection.StreamAsChannelAsync)}' method cannot be called if the connection is not active", exception.Message);
+        }
+
+        [Fact]
+        public async Task CannotCallSendOnDisposedHubConnection()
+        {
+            var connection = new TestConnection();
+            var hubConnection = new HubConnection(() => connection, new JsonHubProtocol(), new LoggerFactory());
+
+            await hubConnection.StartAsync();
+            await hubConnection.DisposeAsync();
+            var exception = await Assert.ThrowsAsync<ObjectDisposedException>(() => hubConnection.SendAsync("test"));
+
+            Assert.Equal(nameof(HubConnection), exception.ObjectName);
+        }
+
+        [Fact]
+        public async Task CannotCallStreamOnDisposedHubConnection()
+        {
+            var connection = new TestConnection();
+            var hubConnection = new HubConnection(() => connection, new JsonHubProtocol(), new LoggerFactory());
+
+            await hubConnection.StartAsync();
+            await hubConnection.DisposeAsync();
+            var exception = await Assert.ThrowsAsync<ObjectDisposedException>(
+                () => hubConnection.StreamAsChannelAsync<int>("test"));
+
+            Assert.Equal(nameof(HubConnection), exception.ObjectName);
         }
 
         [Fact]
@@ -131,7 +158,7 @@ namespace Microsoft.AspNetCore.SignalR.Client.Tests
             var exception = await Assert.ThrowsAsync<InvalidOperationException>(
                 () => hubConnection.StreamAsChannelAsync<int>("test"));
 
-            Assert.Equal("The 'StreamAsChannelAsync' method cannot be called before the connection has been started.", exception.Message);
+            Assert.Equal($"The '{nameof(HubConnection.StreamAsChannelAsync)}' method cannot be called if the connection is not active", exception.Message);
         }
 
         [Fact]
@@ -142,7 +169,7 @@ namespace Microsoft.AspNetCore.SignalR.Client.Tests
 
             await hubConnection.StartAsync();
             var invokeTask = hubConnection.InvokeAsync<int>("testMethod");
-            await hubConnection.DisposeAsync();
+            await hubConnection.StopAsync();
 
             await Assert.ThrowsAsync<TaskCanceledException>(async () => await invokeTask);
         }
@@ -191,7 +218,7 @@ namespace Microsoft.AspNetCore.SignalR.Client.Tests
             var connection = new TestConnection();
             var hubConnection = new HubConnection(() => connection, new JsonHubProtocol(), new LoggerFactory());
             await hubConnection.StartAsync().OrTimeout();
-            await hubConnection.DisposeAsync().OrTimeout();
+            await hubConnection.StopAsync().OrTimeout();
 
             // Fire callbacks, they shouldn't fail
             foreach (var registration in connection.Callbacks)
