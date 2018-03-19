@@ -284,14 +284,10 @@ namespace Microsoft.AspNetCore.SignalR.Client
                         {
                             // Fire and forget, if it fails that means we aren't connected anymore.
                             _ = invocationReq.HubConnection.SendHubMessage(new CancelInvocationMessage(invocationReq.InvocationId), cancellationToken: default);
-
-                            if (invocationReq.HubConnection.TryRemoveInvocation(invocationReq.InvocationId, out _))
-                            {
-                                invocationReq.Complete(CompletionMessage.Empty(irq.InvocationId));
-                            }
-
-                            invocationReq.Dispose();
                         }
+
+                        // Cancel the invocation
+                        invocationReq.Dispose();
                     }, irq);
                 }
 
