@@ -40,9 +40,10 @@ namespace Microsoft.AspNetCore.SignalR.Microbenchmarks
                 protocol = new MessagePackHubProtocol();
             }
 
+            var options = new PipeOptions();
             for (var i = 0; i < Connections; ++i)
             {
-                var pair = DuplexPipe.CreateConnectionPair(PipeOptions.Default, PipeOptions.Default);
+                var pair = DuplexPipe.CreateConnectionPair(options, options);
                 var connection = new DefaultConnectionContext(Guid.NewGuid().ToString(), pair.Application, pair.Transport);
                 var hubConnection = new HubConnectionContext(connection, Timeout.InfiniteTimeSpan, NullLoggerFactory.Instance);
                 hubConnection.Protocol = protocol;
