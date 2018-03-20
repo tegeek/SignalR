@@ -48,6 +48,8 @@ namespace Microsoft.AspNetCore.SignalR.Microbenchmarks
                 var hubConnection = new HubConnectionContext(connection, Timeout.InfiniteTimeSpan, NullLoggerFactory.Instance);
                 hubConnection.Protocol = protocol;
                 _hubLifetimeManager.OnConnectedAsync(hubConnection).Wait();
+
+                _ = ConsumeAsync(connection.Application);
             }
 
             _hubContext = new HubContext<Hub>(_hubLifetimeManager);
@@ -57,6 +59,27 @@ namespace Microsoft.AspNetCore.SignalR.Microbenchmarks
         public Task SendAsyncAll()
         {
             return _hubContext.Clients.All.SendAsync("Method");
+        }
+
+        // Consume the data written to the transport
+        private static async Task ConsumeAsync(IDuplexPipe application)
+        {
+            while (true)
+            {
+                var result = await application.Input.ReadAsync();
+                var buffer = result.Buffer;
+
+                if (!buffer.IsEmpty)
+                {
+                    application.Input.AdvanceTo(buffer.End);
+                }
+                else if (result.IsCompleted)
+                {
+                    break;
+                }
+            }
+
+            application.Input.Complete();
         }
     }
 }
